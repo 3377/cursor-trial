@@ -9,35 +9,35 @@ import os
 import uuid
 import json
 
-def log_info(message, *values):
+def info(message, *values):
     """Show an info message with optional highlighted values"""
     value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
     print(f"{Fore.BLUE}[*]{Style.RESET_ALL} {message}{value_str}")
 
-def log_success(message, *values):
+def success(message, *values):
     """Show a success message with optional highlighted values"""
     value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
     print(f"{Fore.GREEN}[+]{Style.RESET_ALL} {message}{value_str}")
 
-def solve_turnstile(sb):
+def solve_captcha(sb):
     """Try to complete the security check"""
     sb.cdp.assert_element_not_visible("div[aria-hidden='true'] #cf-turnstile")
     sb.wait(0.5)
     sb.cdp.mouse_click("#cf-turnstile")
 
-def enter_verification_code(sb, code):
+def enter_code(sb, code):
     """Type in the 6-digit code"""
     box = lambda n: f"body > div.radix-themes > div > div > div:nth-child(2) > div > form > div > div > div > div:nth-child({n}) > input"
     for i, digit in enumerate(code):
         sb.send_keys(box(i + 1), digit)
 
-def extract_verification_code(message_body):
+def get_code(message_body):
     """Find the 6-digit code in the email"""
     return re.search(r'<div style="[^"]*?">\s*?(\d{6})\s*?</div>', message_body).group(1)
 
-def get_cursor_session_token(sb, max_attempts=3, retry_interval=2):
+def get_token(sb, max_attempts=3, retry_interval=2):
     """Try to get the Cursor session token with retries"""
-    log_info("Getting session token...")
+    info("Getting session token...")
     attempts = 0
 
     while attempts < max_attempts:
@@ -49,7 +49,7 @@ def get_cursor_session_token(sb, max_attempts=3, retry_interval=2):
             for cookie in cookies:
                 if cookie.get("name") == "WorkosCursorSessionToken":
                     token = cookie["value"].split("%3A%3A")[1]
-                    log_success("Got session token!")
+                    success("Got session token!")
                     return token
 
             attempts += 1
@@ -68,7 +68,7 @@ def get_cursor_session_token(sb, max_attempts=3, retry_interval=2):
 
     return None
 
-def update_cursor_auth(email=None, access_token=None, refresh_token=None):
+def update_auth(email=None, access_token=None, refresh_token=None):
     """Update Cursor login info in the database
     Special thanks to https://github.com/chengazhen/cursor-auto-free for the original implementation"""
     db_path = os.path.join(
@@ -105,7 +105,7 @@ def update_cursor_auth(email=None, access_token=None, refresh_token=None):
         if conn:
             conn.close()
 
-def change_machine_guid_and_close():
+def reset_machine():
     """Try to change the machine ID and close Cursor"""
     try:
         subprocess.call(['reset.bat'])
@@ -114,7 +114,7 @@ def change_machine_guid_and_close():
         print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change machine ID or close Cursor: {e}")
         return False
 
-def change_telemetry_device_id():
+def reset_device():
     """Try to change the device tracking ID
     Special thanks to https://github.com/yuaotian/go-cursor-help for the brilliant solution"""
     storage_path = os.path.join(
@@ -150,12 +150,12 @@ def change_telemetry_device_id():
         print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change device ID: {e}")
         return False
 
-def register_account():
+def register():
     """Try to make a new account"""
     init()  # Start colorama
     
     with SB(uc=True, test=True, disable_csp=True, extension_dir="turnstile", headless=True) as sb:
-        log_info("Starting to make a new account...")
+        info("Starting to make a new account...")
         
         # Set up account info
         name = "John"
@@ -164,64 +164,64 @@ def register_account():
         password = token_urlsafe(24)
         url = f"https://authenticator.cursor.sh/sign-up/password?first_name={name}&last_name={last_name}&email={email}"
         
-        log_info("Using email: ", email.address)
+        info("Using email: ", email.address)
 
         # Fill out the form
-        log_info("Going to signup page...")
+        info("Going to signup page...")
         sb.activate_cdp_mode(url)
         sb.send_keys("input[name='password']", password)
-        log_info("Sending form...")
+        info("Sending form...")
         sb.uc_click("button[value='sign-up']")
 
         # First security check
-        log_info("Waiting for first security check...")
-        solve_turnstile(sb)
+        info("Waiting for first security check...")
+        solve_captcha(sb)
 
         # Check email
-        log_info("Waiting for email...")
+        info("Waiting for email...")
         message_body = email.wait_for_message().body
-        six_digit_number = extract_verification_code(message_body)
-        log_info("Got code: ", six_digit_number)
+        six_digit_number = get_code(message_body)
+        info("Got code: ", six_digit_number)
         
         # Put in the code
-        log_info("Typing code...")
-        enter_verification_code(sb, six_digit_number)
+        info("Typing code...")
+        enter_code(sb, six_digit_number)
 
         # Second security check
-        log_info("Waiting for second security check...")
-        solve_turnstile(sb)
+        info("Waiting for second security check...")
+        solve_captcha(sb)
 
         # Check if it worked
-        log_info("Checking if signup worked...")
+        info("Checking if signup worked...")
         sb.assert_text("The AI Code Editor")
-        log_success("Made new account! Login info: ", f"{email.address}:{password}")
+        success("Made new account! Login info: ", f"{email.address}:{password}")
 
         # Get session token
-        session_token = get_cursor_session_token(sb)
+        session_token = get_token(sb)
         if session_token:
-            log_success("Got session token: ", session_token)
+            success("Got session token: ", session_token)
         
         # Set up Cursor login
-        log_info("Setting up Cursor login...")
-        if update_cursor_auth(email.address, session_token, session_token):
-            log_success("Login info saved!")
+        info("Setting up Cursor login...")
+        if update_auth(email.address, session_token, session_token):
+            success("Login info saved!")
         else:
             print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not save login info")
 
         # Change IDs and close
-        log_info("Changing IDs and closing Cursor...")
-        if change_machine_guid_and_close():
-            log_success("Changed IDs and closed Cursor!")
+        info("Changing IDs and closing Cursor...")
+        if reset_machine():
+            success("Changed IDs and closed Cursor!")
         else:
             print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change IDs or close Cursor")
 
         # Change device ID
-        log_info("Changing device ID...")
-        if change_telemetry_device_id():
-            log_success("Changed device ID!")
+        info("Changing device ID...")
+        if reset_device():
+            success("Changed device ID!")
         else:
             print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change device ID")
 
 if __name__ == "__main__":
-    register_account()
+    register()
 
