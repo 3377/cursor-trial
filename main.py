@@ -108,7 +108,12 @@ def update_auth(email=None, access_token=None, refresh_token=None):
 def reset_machine():
     """Try to change the machine ID and close Cursor"""
     try:
-        subprocess.call(['reset.bat'])
+        subprocess.run([
+            'powershell.exe',
+            '-WindowStyle', 'Hidden',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', 'reset.ps1'
+        ], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return True
     except subprocess.CalledProcessError as e:
         print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change machine ID or close Cursor: {e}")
