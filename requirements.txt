@@ -1,0 +1,3 @@
+seleniumbase~=4.33.0
+tempmail-python~=2.3.3
+colorama~=0.4.0 
