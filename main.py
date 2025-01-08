@@ -8,6 +8,7 @@ import sqlite3
 import os
 import uuid
 import json
+import time
 
 def info(message, *values):
     """Show an info message with optional highlighted values"""
@@ -21,9 +22,24 @@ def success(message, *values):
 
 def solve_captcha(sb):
     """Try to complete the security check"""
-    sb.cdp.assert_element_not_visible("div[aria-hidden='true'] #cf-turnstile")
-    sb.wait(0.5)
-    sb.cdp.mouse_click("#cf-turnstile")
+    try:
+        # Wait for any hidden captcha to be removed first
+        sb.cdp.assert_element_not_visible("div[aria-hidden='true'] #cf-turnstile")
+        
+        # Wait for the visible, centered captcha
+        captcha_selector = "div[style*='--ml: auto'][style*='--mr: auto'] #cf-turnstile"
+        sb.wait_for_element_visible(captcha_selector, timeout=60)
+        
+        # Additional check to ensure captcha is really needed
+        if sb.is_element_visible(captcha_selector):
+            info("Solving captcha...")
+            sb.cdp.mouse_click("#cf-turnstile")
+            success("Captcha clicked!")
+        else:
+            info("No captcha needed")
+            
+    except Exception as e:
+        info(f"Error handling captcha: {str(e)}")
 
 def enter_code(sb, code):
     """Type in the 6-digit code"""
@@ -198,7 +214,11 @@ def register():
 
         # Check if it worked
         info("Checking if signup worked...")
-        sb.assert_text("The AI Code Editor")
+        start_time = time.time()
+        while sb.get_current_url() != "https://www.cursor.com/":
+            if time.time() - start_time > 60:  # 60 second timeout
+                raise TimeoutError("Signup verification timed out after 60 seconds")
+            sb.sleep(1)
         success("Made new account! Login info: ", f"{email.address}:{password}")
 
         # Get session token
