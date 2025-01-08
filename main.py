@@ -1,6 +1,6 @@
 from seleniumbase import SB
 from tempmail import EMail
-from secrets import token_urlsafe
+from secrets import token_urlsafe, randbelow
 from colorama import init, Fore, Style
 import re
 import subprocess
@@ -20,26 +20,34 @@ def success(message, *values):
     value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
     print(f"{Fore.GREEN}[+]{Style.RESET_ALL} {message}{value_str}")
 
+
+def error(message, *values):
+    """Show an error message with optional highlighted values"""
+    value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
+    print(f"{Fore.RED}[!]{Style.RESET_ALL} {message}{value_str}")
+
 def solve_captcha(sb):
-    """Try to complete the security check"""
-    try:
-        # Wait for any hidden captcha to be removed first
-        sb.cdp.assert_element_not_visible("div[aria-hidden='true'] #cf-turnstile")
-        
-        # Wait for the visible, centered captcha
-        captcha_selector = "div[style*='--ml: auto'][style*='--mr: auto'] #cf-turnstile"
-        sb.wait_for_element_visible(captcha_selector, timeout=60)
-        
-        # Additional check to ensure captcha is really needed
-        if sb.is_element_visible(captcha_selector):
-            info("Solving captcha...")
-            sb.cdp.mouse_click("#cf-turnstile")
-            success("Captcha clicked!")
-        else:
-            info("No captcha needed")
-            
-    except Exception as e:
-        info(f"Error handling captcha: {str(e)}")
+    """Try to complete the security check by waiting for the specific wrapper div"""
+    # Wait for case 1 specifically - the wrapper with min-content width style
+    wrapper = 'div.rt-Box[style*="--width: min-content"]'
+    sb.wait_for_element(f"{wrapper} div#cf-turnstile", timeout=60)
+
+    info("Waiting for captcha to be solved...")
+    while True:
+        sb.wait(randbelow(1000) / 1000)
+        sb.cdp.mouse_click(f"{wrapper} #cf-turnstile")
+        try:
+            sb.wait_for_element_not_visible(f"{wrapper} div#cf-turnstile", timeout=randbelow(5))
+            break
+        except Exception as _:
+            try:
+                if sb.assert_text("Can‘t verify the user is human. Please try again."):
+                    return False
+                break
+            except Exception as _:
+                continue
+    success("Captcha solved!")
+    return True
 
 def enter_code(sb, code):
     """Type in the 6-digit code"""
@@ -175,7 +183,7 @@ def register():
     """Try to make a new account"""
     init()  # Start colorama
     
-    with SB(uc=True, test=True, disable_csp=True, extension_dir="turnstile", headless=True) as sb:
+    with SB(uc=True, test=True, disable_csp=True, headless=True, extension_dir="turnstile") as sb:
         info("Starting to make a new account...")
         
         # Set up account info
@@ -196,7 +204,9 @@ def register():
 
         # First security check
         info("Waiting for first security check...")
-        solve_captcha(sb)
+        if not solve_captcha(sb):
+            error("Failed to solve first security check, exiting...")
+            return
 
         # Check email
         info("Waiting for email...")
@@ -210,14 +220,17 @@ def register():
 
         # Second security check
         info("Waiting for second security check...")
-        solve_captcha(sb)
+        if not solve_captcha(sb):
+            error("Failed to solve second security check, exiting...")
+            return
 
         # Check if it worked
         info("Checking if signup worked...")
         start_time = time.time()
         while sb.get_current_url() != "https://www.cursor.com/":
             if time.time() - start_time > 60:  # 60 second timeout
-                raise TimeoutError("Signup verification timed out after 60 seconds")
+                error("Signup verification timed out after 60 seconds, exiting...")
+                return
             sb.sleep(1)
         success("Made new account! Login info: ", f"{email.address}:{password}")
 
