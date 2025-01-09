@@ -9,23 +9,24 @@ from secrets import randbelow, token_urlsafe
 
 from colorama import Fore, Style, init
 from seleniumbase import SB
-from tempmail import EMail
-
-def info(message, *values):
-    """Show an info message with optional highlighted values"""
-    value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
-    print(f"{Fore.BLUE}[*]{Style.RESET_ALL} {message}{value_str}")
-
-def success(message, *values):
-    """Show a success message with optional highlighted values"""
-    value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
-    print(f"{Fore.GREEN}[+]{Style.RESET_ALL} {message}{value_str}")
+from requests import session
 
 
-def error(message, *values):
-    """Show an error message with optional highlighted values"""
-    value_str = ''.join(f"{Fore.CYAN}{v}{Style.RESET_ALL}" for v in values)
-    print(f"{Fore.RED}[!]{Style.RESET_ALL} {message}{value_str}")
+def color(text, color_code=Fore.CYAN):
+    """Colorize text with the specified color code"""
+    return f"{color_code}{text}{Style.RESET_ALL}"
+
+def info(message):
+    """Show an info message"""
+    print(f"{color('[*]', Fore.BLUE)} {message}")
+
+def success(message):
+    """Show a success message"""
+    print(f"{color('[+]', Fore.GREEN)} {message}")
+
+def error(message):
+    """Show an error message"""
+    print(f"{color('[!]', Fore.RED)} {message}")
 
 def solve_captcha(sb):
     """Try to complete the security check by waiting for the specific wrapper div"""
@@ -55,13 +56,6 @@ def enter_code(sb, code):
     box = lambda n: f"body > div.radix-themes > div > div > div:nth-child(2) > div > form > div > div > div > div:nth-child({n}) > input"
     for i, digit in enumerate(code):
         sb.send_keys(box(i + 1), digit)
-
-def get_code(message_body):
-    """Find the 6-digit code in the email"""
-    match = re.search(r'<div style="[^"]*?">\s*?(\d{6})\s*?</div>', message_body)
-    if not match:
-        raise ValueError("Could not find 6-digit code in email")
-    return match.group(1)
 
 def get_token(sb, max_attempts=3, retry_interval=2):
     """Try to get the Cursor session token with retries"""
@@ -193,86 +187,118 @@ def reset_device():
         print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change device ID: {e}")
         return False
 
+def get_temp_email(session):
+    """Get a temporary email address from burner.kiwi
+    Returns: email address string or None if failed"""
+    mail_content = session.get("https://burner.kiwi/").text
+    email_match = re.search(r'<h1 class="inbox-address">([^<]+)</h1>', mail_content)
+    if not email_match:
+        error("Failed to generate temp mail")
+        return None
+    return email_match.group(1)
+
+def wait_for_verification_code(session):
+    """Wait for and extract verification code from burner.kiwi email
+    Returns: 6-digit verification code or None if failed"""
+    # Wait for email to arrive
+    while True:
+        mail_match = re.search(r'<a class="sidebar-email " href="([^"]*)"', session.get("https://burner.kiwi/").text)
+        if mail_match:
+            break
+        time.sleep(1)
+    
+    # Extract verification code
+    email_content = session.get("https://burner.kiwi/" + mail_match.group(1)).text
+    code_match = re.search(r'is (\d{6}\b)', email_content)
+    if not code_match:
+        error("Failed to get verification code")
+        return None
+    return code_match.group(1)
+
 def register():
-    """Try to make a new account"""
-    init()  # Start colorama
+    """Create a new Cursor account with temporary email and automated verification"""
+    init()  # Initialize colorama for colored console output
     
     with SB(uc=True, test=True, disable_csp=True, headless=True, extension_dir="turnstile") as sb:
-        info("Starting to make a new account...")
-        
-        # Set up account info
+        info("Initializing new account registration process...")
+
+        # Set up email session and get temporary address
+        email_session = session()
+        info(f"Generating temporary email address from {color('burner.kiwi', Fore.YELLOW)}...")
+        email = get_temp_email(email_session)
+        if not email:
+            return
+
+        # Set up registration details
         name = "John"
         last_name = "Doe"
-        email = EMail()
         password = token_urlsafe(24)
-        url = f"https://authenticator.cursor.sh/sign-up/password?first_name={name}&last_name={last_name}&email={email}"
-        
-        info("Using email: ", email.address)
+        register_url = f"https://authenticator.cursor.sh/sign-up/password?first_name={name}&last_name={last_name}&email={email}"
 
-        # Fill out the form
-        info("Going to signup page...")
-        sb.activate_cdp_mode(url)
+        info(f"Navigating to registration page with email: {color(email)}")
+        sb.activate_cdp_mode(register_url)
+
+        # Complete registration form
+        info(f"Filling registration form with {color('credentials', Fore.YELLOW)}...")
         sb.send_keys("input[name='password']", password)
-        info("Sending form...")
         sb.uc_click("button[value='sign-up']")
 
-        # First security check
-        info("Waiting for first security check...")
+        # Handle first Cloudflare Turnstile verification
+        info(f"Initiating first {color('Cloudflare', Fore.YELLOW)} security verification...")
         if not solve_captcha(sb):
-            error("Failed to solve first security check, exiting...")
+            error("First security verification failed, aborting...")
             return
 
-        # Check email
-        info("Waiting for email...")
-        message_body = email.wait_for_message().body
-        six_digit_number = get_code(message_body)
-        info("Got code: ", six_digit_number)
-        
-        # Put in the code
-        info("Typing code...")
-        enter_code(sb, six_digit_number)
-
-        # Second security check
-        info("Waiting for second security check...")
-        if not solve_captcha(sb):
-            error("Failed to solve second security check, exiting...")
+        # Get verification code from email
+        info(f"Checking {color('burner.kiwi', Fore.YELLOW)} inbox...")
+        verification_code = wait_for_verification_code(email_session)
+        if not verification_code:
             return
 
-        # Check if it worked
-        info("Checking if signup worked...")
+        info(f"Verification code received: {color(verification_code)}")
+        enter_code(sb, verification_code)
+
+        # Handle second Cloudflare Turnstile verification
+        info(f"Initiating second {color('Cloudflare', Fore.YELLOW)} security verification...")
+        if not solve_captcha(sb):
+            error("Second security verification failed, aborting...")
+            return
+
+        # Verify successful registration
+        info("Verifying successful registration...")
         start_time = time.time()
         while sb.get_current_url() != "https://www.cursor.com/":
-            if time.time() - start_time > 60:  # 60 second timeout
-                error("Signup verification timed out after 60 seconds, exiting...")
+            if time.time() - start_time > 60:
+                error("Registration verification timed out after 60 seconds")
                 return
             sb.sleep(1)
-        success("Made new account! Login info: ", f"{email.address}:{password}")
+        success(f"Account successfully created! Credentials: {color(f'{email}:{password}')}")
 
-        # Get session token
+        # Retrieve and store authentication tokens
         session_token = get_token(sb)
         if session_token:
-            success("Got session token: ", session_token)
+            success(f"Authentication token retrieved: {color(f'{session_token[:10]}...')}")
         
-        # Set up Cursor login
-        info("Setting up Cursor login...")
-        if update_auth(email.address, session_token, session_token):
-            success("Login info saved!")
+        # Update local Cursor authentication
+        info(f"Updating local {color('Cursor', Fore.YELLOW)} authentication...")
+        if update_auth(email, session_token, session_token):
+            success("Local authentication updated")
         else:
-            print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not save login info")
+            error("Failed to update local authentication")
 
-        # Change IDs and close
-        info("Changing IDs and closing Cursor...")
+        # Reset machine identification
+        info(f"Initiating {color('machine ID', Fore.YELLOW)} reset...")
         if reset_machine():
-            success("Changed IDs and closed Cursor!")
+            success("Machine ID reset and Cursor shutdown completed")
         else:
-            print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change IDs or close Cursor")
+            error("Failed to reset machine ID or shutdown Cursor")
 
-        # Change device ID
-        info("Changing device ID...")
+        # Reset device identification
+        info(f"Initiating {color('device ID', Fore.YELLOW)} reset...")
         if reset_device():
-            success("Changed device ID!")
+            success("Device ID reset completed")
         else:
-            print(f"{Fore.RED}[!]{Style.RESET_ALL} Could not change device ID")
+            error("Failed to reset device ID")
 
 if __name__ == "__main__":
     register()
