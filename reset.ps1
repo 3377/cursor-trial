@@ -1,17 +1,14 @@
-# Check if running as administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
-    # Self-elevate the script and run hidden
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`"" -Verb RunAs
-    Exit
+#region Check if running as administrator and self-elevate
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`"" -Verb RunAs -WindowStyle Hidden
+    exit
 }
+#endregion
 
-# Generate new GUID
-$newGuid = [guid]::NewGuid().ToString()
+#region Generate and set new MachineGuid
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid" -Value ([guid]::NewGuid()).ToString()
+#endregion
 
-# Update registry with new GUID
-Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid" -Value $newGuid
-
-# Close Cursor
-Stop-Process -Name "cursor" -Force -ErrorAction SilentlyContinue 
+#region Close Cursor
+Stop-Process -Name "cursor" -Force -ErrorAction SilentlyContinue
+#endregion

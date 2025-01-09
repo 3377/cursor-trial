@@ -133,12 +133,18 @@ def update_auth(email=None, access_token=None, refresh_token=None):
 def reset_machine():
     """Try to change the machine ID and close Cursor"""
     try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        
         subprocess.run([
             'powershell.exe',
             '-WindowStyle', 'Hidden',
             '-ExecutionPolicy', 'Bypass',
             '-File', 'reset.ps1'
-        ], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        ], capture_output=True, 
+           creationflags=subprocess.CREATE_NO_WINDOW,
+           startupinfo=startupinfo)
         return True
     except subprocess.CalledProcessError as e:
         log_message(f"Could not change machine ID or close Cursor: {e}", "error")
@@ -217,7 +223,7 @@ def register():
     """Create a new Cursor account with temporary email and automated verification"""
     init()  # Initialize colorama for colored console output
     
-    with SB(uc=True, test=True, disable_csp=True, headless=True, extension_dir="turnstile") as sb:
+    with SB(uc=True, test=True, disable_csp=True, headless2=True, extension_dir="turnstile") as sb:
         log_message("Initializing new account registration process...")
         
         # Email setup
