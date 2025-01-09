@@ -1,14 +1,15 @@
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import time
+import uuid
+from secrets import randbelow, token_urlsafe
+
+from colorama import Fore, Style, init
 from seleniumbase import SB
 from tempmail import EMail
-from secrets import token_urlsafe, randbelow
-from colorama import init, Fore, Style
-import re
-import subprocess
-import sqlite3
-import os
-import uuid
-import json
-import time
 
 def info(message, *values):
     """Show an info message with optional highlighted values"""
@@ -57,7 +58,10 @@ def enter_code(sb, code):
 
 def get_code(message_body):
     """Find the 6-digit code in the email"""
-    return re.search(r'<div style="[^"]*?">\s*?(\d{6})\s*?</div>', message_body).group(1)
+    match = re.search(r'<div style="[^"]*?">\s*?(\d{6})\s*?</div>', message_body)
+    if not match:
+        raise ValueError("Could not find 6-digit code in email")
+    return match.group(1)
 
 def get_token(sb, max_attempts=3, retry_interval=2):
     """Try to get the Cursor session token with retries"""
@@ -95,8 +99,13 @@ def get_token(sb, max_attempts=3, retry_interval=2):
 def update_auth(email=None, access_token=None, refresh_token=None):
     """Update Cursor login info in the database
     Special thanks to https://github.com/chengazhen/cursor-auto-free for the original implementation"""
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        error("APPDATA environment variable not set")
+        return False
+        
     db_path = os.path.join(
-        os.getenv("APPDATA"), "Cursor", "User", "globalStorage", "state.vscdb"
+        appdata, "Cursor", "User", "globalStorage", "state.vscdb"
     )
     
     # Build update list
@@ -146,8 +155,13 @@ def reset_machine():
 def reset_device():
     """Try to change the device tracking ID
     Special thanks to https://github.com/yuaotian/go-cursor-help for the brilliant solution"""
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        error("APPDATA environment variable not set")
+        return False
+        
     storage_path = os.path.join(
-        os.getenv("APPDATA"), "Cursor", "User", "globalStorage", "storage.json"
+        appdata, "Cursor", "User", "globalStorage", "storage.json"
     )
     
     try:
