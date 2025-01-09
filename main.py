@@ -8,8 +8,8 @@ import uuid
 from secrets import randbelow, token_urlsafe
 
 from colorama import Fore, Style, init
-from seleniumbase import SB
 from requests import session
+from seleniumbase import SB
 
 
 def color(text, color_code=Fore.CYAN):
