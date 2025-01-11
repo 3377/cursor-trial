@@ -18,7 +18,6 @@
 - Chrome
 - Dependencies:
   - seleniumbase~=4.33.0
-  - requests~=2.32.0
   - colorama~=0.4.0
 
 ## Quick Start

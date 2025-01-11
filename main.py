@@ -5,18 +5,36 @@ import sqlite3
 import subprocess
 import time
 import uuid
+import urllib.request
+import http.cookiejar
 from secrets import randbelow, token_urlsafe
 
 from colorama import Fore, Style, init
-from requests import session
 from seleniumbase import SB
 
-
-TIMEOUT_SECONDS = 60
-RETRY_INTERVAL = 2
-MAX_ATTEMPTS = 3
+# URLs
 BASE_URL = "https://authenticator.cursor.sh"
 BURNER_EMAIL_URL = "https://burner.kiwi/"
+
+# Timeouts and Intervals
+MAX_ATTEMPTS = 3
+RETRY_INTERVAL = 2
+CAPTCHA_TIMEOUT = 5
+EMAIL_CHECK_INTERVAL = 1
+RANDOM_DELAY_MAX = 1000
+
+# Device ID Generation
+DEVICE_ID_SHORT_LENGTH = 8
+DEVICE_ID_MEDIUM_LENGTH = 4
+DEVICE_ID_LONG_LENGTH = 12
+
+# Authentication
+PASSWORD_LENGTH = 24
+
+# Regex Patterns
+MACHINE_ID_REGEX = r'is (\d{6}\b)'
+EMAIL_REGEX = r'<h1 class="inbox-address">([^<]+)</h1>'
+EMAIL_LINK_REGEX = r'<a class="sidebar-email " href="([^"]*)"'
 
 def log_message(message, level="info"):
     """Unified logging function with color support"""
@@ -41,10 +59,10 @@ def solve_captcha(sb):
 
     log_message("Waiting for captcha to be solved...")
     while True:
-        sb.wait(randbelow(1000) / 1000)
+        sb.wait(randbelow(RANDOM_DELAY_MAX) / RANDOM_DELAY_MAX)
         sb.cdp.mouse_click(f"{wrapper} #cf-turnstile")
         try:
-            sb.wait_for_element_not_visible(f"{wrapper} div#cf-turnstile", timeout=randbelow(5))
+            sb.wait_for_element_not_visible(f"{wrapper} div#cf-turnstile", timeout=randbelow(CAPTCHA_TIMEOUT))
             break
         except Exception as _:
             try:
@@ -57,7 +75,7 @@ def solve_captcha(sb):
     return True
 
 def enter_code(sb, code):
-    """Type in the 6-digit code"""
+    """Type in the {VERIFICATION_CODE_LENGTH}-digit code"""
     box = lambda n: f"body > div.radix-themes > div > div > div:nth-child(2) > div > form > div > div > div > div:nth-child({n}) > input"
     for i, digit in enumerate(code):
         sb.send_keys(box(i + 1), digit)
@@ -168,7 +186,7 @@ def reset_device():
             config = json.load(f)
         
         # Make new IDs
-        config['telemetry.devDeviceId'] = f"{uuid.uuid4().hex[:8]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:4]}-{uuid.uuid4().hex[:12]}"
+        config['telemetry.devDeviceId'] = f"{uuid.uuid4().hex[:DEVICE_ID_SHORT_LENGTH]}-{uuid.uuid4().hex[:DEVICE_ID_MEDIUM_LENGTH]}-{uuid.uuid4().hex[:DEVICE_ID_MEDIUM_LENGTH]}-{uuid.uuid4().hex[:DEVICE_ID_MEDIUM_LENGTH]}-{uuid.uuid4().hex[:DEVICE_ID_LONG_LENGTH]}"
         config['telemetry.macMachineId'] = str(uuid.uuid4())
         config['telemetry.machineId'] = uuid.uuid4().hex + uuid.uuid4().hex
         config['telemetry.sqmId'] = "{" + str(uuid.uuid4()).upper() + "}"
@@ -191,33 +209,52 @@ def reset_device():
         log_message(f"Could not change device ID: {e}", "error")
         return False
 
-def get_temp_email(session):
+def get_temp_email(cookiejar):
     """Get a temporary email address from burner.kiwi
     Returns: email address string or None if failed"""
-    mail_content = session.get("https://burner.kiwi/").text
-    email_match = re.search(r'<h1 class="inbox-address">([^<]+)</h1>', mail_content)
-    if not email_match:
-        log_message("Failed to generate temp mail", "error")
+    try:
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookiejar))
+        with opener.open("https://burner.kiwi/") as response:
+            mail_content = response.read().decode('utf-8')
+            email_match = re.search(EMAIL_REGEX, mail_content)
+            if not email_match:
+                log_message("Failed to generate temp mail", "error")
+                return None
+            return email_match.group(1)
+    except Exception as e:
+        log_message(f"Failed to get temp mail: {e}", "error")
         return None
-    return email_match.group(1)
 
-def wait_for_verification_code(session):
+def wait_for_verification_code(cookiejar):
     """Wait for and extract verification code from burner.kiwi email
     Returns: 6-digit verification code or None if failed"""
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookiejar))
+    
     # Wait for email to arrive
     while True:
-        mail_match = re.search(r'<a class="sidebar-email " href="([^"]*)"', session.get("https://burner.kiwi/").text)
-        if mail_match:
-            break
-        time.sleep(1)
+        try:
+            with opener.open(BURNER_EMAIL_URL) as response:
+                mail_content = response.read().decode('utf-8')
+                mail_match = re.search(EMAIL_LINK_REGEX, mail_content)
+                if mail_match:
+                    break
+            time.sleep(EMAIL_CHECK_INTERVAL)
+        except Exception as e:
+            log_message(f"Error checking for email: {e}", "error")
+            return None
     
     # Extract verification code
-    email_content = session.get("https://burner.kiwi/" + mail_match.group(1)).text
-    code_match = re.search(r'is (\d{6}\b)', email_content)
-    if not code_match:
-        log_message("Failed to get verification code", "error")
+    try:
+        with opener.open(BURNER_EMAIL_URL + mail_match.group(1)) as response:
+            email_content = response.read().decode('utf-8')
+            code_match = re.search(MACHINE_ID_REGEX, email_content)
+            if not code_match:
+                log_message("Failed to get verification code", "error")
+                return None
+            return code_match.group(1)
+    except Exception as e:
+        log_message(f"Failed to get verification code: {e}", "error")
         return None
-    return code_match.group(1)
 
 def register():
     """Create a new Cursor account with temporary email and automated verification"""
@@ -227,16 +264,16 @@ def register():
         log_message("Initializing new account registration process...")
         
         # Email setup
-        email_session = session()
+        cookiejar = http.cookiejar.CookieJar()
         log_message(f"Generating temporary email address from {color('burner.kiwi', Fore.YELLOW)}...")
-        if not (email := get_temp_email(email_session)):
+        if not (email := get_temp_email(cookiejar)):
             return
 
         # Registration setup  
         credentials = {
             "name": "John",
             "last_name": "Doe",
-            "password": token_urlsafe(24),
+            "password": token_urlsafe(PASSWORD_LENGTH),
             "email": email
         }
         
@@ -258,7 +295,7 @@ def register():
 
         # Get verification code from email
         log_message(f"Checking {color('burner.kiwi', Fore.YELLOW)} inbox...")
-        verification_code = wait_for_verification_code(email_session)
+        verification_code = wait_for_verification_code(cookiejar)
         if not verification_code:
             return
 
