@@ -12,6 +12,7 @@ from secrets import randbelow, token_urlsafe
 from colorama import Fore, Style, init
 from seleniumbase import SB
 
+# --- Constants ---
 # URLs
 BASE_URL = "https://authenticator.cursor.sh"
 BURNER_EMAIL_URL = "https://burner.kiwi/"
@@ -22,6 +23,8 @@ RETRY_INTERVAL = 2
 CAPTCHA_TIMEOUT = 5
 EMAIL_CHECK_INTERVAL = 1
 RANDOM_DELAY_MAX = 1000
+REGISTRATION_TIMEOUT = 60
+TOKEN_PREVIEW_LENGTH = 10
 
 # Device ID Generation
 DEVICE_ID_SHORT_LENGTH = 8
@@ -30,12 +33,14 @@ DEVICE_ID_LONG_LENGTH = 12
 
 # Authentication
 PASSWORD_LENGTH = 24
+VERIFICATION_CODE_LENGTH = 6
 
 # Regex Patterns
 MACHINE_ID_REGEX = r'is (\d{6}\b)'
 EMAIL_REGEX = r'<h1 class="inbox-address">([^<]+)</h1>'
 EMAIL_LINK_REGEX = r'<a class="sidebar-email " href="([^"]*)"'
 
+# --- Utility Functions ---
 def log_message(message, level="info"):
     """Unified logging function with color support"""
     colors = {
@@ -51,28 +56,57 @@ def color(text, color_code=Fore.CYAN):
     """Colorize text with the specified color code"""
     return f"{color_code}{text}{Style.RESET_ALL}"
 
-def solve_captcha(sb):
-    """Try to complete the security check by waiting for the specific wrapper div"""
-    # Wait for case 1 specifically - the wrapper with min-content width style
-    wrapper = 'div.rt-Box[style*="--width: min-content"]'
-    sb.wait_for_element(f"{wrapper} div#cf-turnstile", timeout=60)
-
-    log_message("Waiting for captcha to be solved...")
-    while True:
-        sb.wait(randbelow(RANDOM_DELAY_MAX) / RANDOM_DELAY_MAX)
-        sb.cdp.mouse_click(f"{wrapper} #cf-turnstile")
-        try:
-            sb.wait_for_element_not_visible(f"{wrapper} div#cf-turnstile", timeout=randbelow(CAPTCHA_TIMEOUT))
-            break
-        except Exception as _:
+# --- Selenium Interaction Functions ---
+def solve_captcha(sb, next_text: str):
+    """Handle Cloudflare Turnstile captcha verification using visual state detection"""
+    try:
+        # First check for visible captcha
+        visible_wrapper = 'div.rt-Box[style*="--width: min-content"]:not([aria-hidden="true"])'
+        # Check if captcha is initially hidden
+        hidden_captcha = sb.is_element_present('div.rt-Box[aria-hidden="true"] div#cf-turnstile')
+        
+        if hidden_captcha:
+            # Wait for captcha to become visible
+            while True:
+                try:
+                    if sb.cdp.assert_element(visible_wrapper, timeout=0.1):
+                        log_message("Captcha found.", "success")
+                        break
+                except Exception as e:
+                    pass
+                try:
+                    if sb.cdp.assert_text(next_text, timeout=0.1):
+                        log_message("No captcha found.", "success")
+                        return True
+                except Exception as e:
+                    pass
+                sb.wait(0.1)
+        
+        log_message("Waiting for captcha to be solved...")
+        while True:
+            # Add random delay between interactions
+            sb.wait(randbelow(RANDOM_DELAY_MAX) / 1000)
+            
+            # Click the turnstile
+            sb.cdp.mouse_click(f"div.rt-Box[style*='--width: min-content'] #cf-turnstile")
+            
             try:
-                if sb.assert_text("Can‘t verify the user is human. Please try again."):
-                    return False
+                # Check if captcha disappears (success case)
+                sb.wait_for_element_not_visible(f"{visible_wrapper}", timeout=CAPTCHA_TIMEOUT)
                 break
-            except Exception as _:
+            except Exception:
+                # Check for error message
+                if sb.is_text_visible("Can't verify the user is human. Please try again."):
+                    return False
+                # No error but not solved yet, continue loop
                 continue
-    log_message("Captcha solved!", "success")
-    return True
+                
+        log_message("Captcha solved!", "success")
+        return True
+        
+    except Exception as e:
+        log_message(f"Captcha verification failed: {str(e)}", "error")
+        return False
 
 def enter_code(sb, code):
     """Type in the {VERIFICATION_CODE_LENGTH}-digit code"""
@@ -106,6 +140,7 @@ def get_token(sb, max_attempts=MAX_ATTEMPTS, retry_interval=RETRY_INTERVAL):
     
     return None
 
+# --- Database Interaction Functions ---
 def update_auth(email=None, access_token=None, refresh_token=None):
     """Update Cursor login info in the database
     Special thanks to https://github.com/chengazhen/cursor-auto-free for the original implementation"""
@@ -148,6 +183,7 @@ def update_auth(email=None, access_token=None, refresh_token=None):
         if conn:
             conn.close()
 
+# --- System Interaction Functions ---
 def reset_machine():
     """Try to change the machine ID and close Cursor"""
     try:
@@ -209,6 +245,7 @@ def reset_device():
         log_message(f"Could not change device ID: {e}", "error")
         return False
 
+# --- Email Interaction Functions ---
 def get_temp_email(cookiejar):
     """Get a temporary email address from burner.kiwi
     Returns: email address string or None if failed"""
@@ -256,6 +293,7 @@ def wait_for_verification_code(cookiejar):
         log_message(f"Failed to get verification code: {e}", "error")
         return None
 
+# --- Main Registration Function ---
 def register():
     """Create a new Cursor account with temporary email and automated verification"""
     init()  # Initialize colorama for colored console output
@@ -289,7 +327,7 @@ def register():
 
         # Handle first Cloudflare Turnstile verification
         log_message(f"Initiating first {color('Cloudflare', Fore.YELLOW)} security verification...")
-        if not solve_captcha(sb):
+        if not solve_captcha(sb, "Verify your email"):
             log_message("First security verification failed, aborting...", "error")
             return
 
@@ -304,7 +342,7 @@ def register():
 
         # Handle second Cloudflare Turnstile verification
         log_message(f"Initiating second {color('Cloudflare', Fore.YELLOW)} security verification...")
-        if not solve_captcha(sb):
+        if not solve_captcha(sb, "Download"):
             log_message("Second security verification failed, aborting...", "error")
             return
 
@@ -312,16 +350,16 @@ def register():
         log_message("Verifying successful registration...")
         start_time = time.time()
         while sb.get_current_url() != "https://www.cursor.com/":
-            if time.time() - start_time > 60:
-                log_message("Registration verification timed out after 60 seconds", "error")
+            if time.time() - start_time > REGISTRATION_TIMEOUT:
+                log_message(f"Registration verification timed out after {REGISTRATION_TIMEOUT} seconds", "error")
                 return
-            sb.sleep(1)
+            sb.sleep(EMAIL_CHECK_INTERVAL)
         log_message(f"Account successfully created! Credentials: {color(f"{credentials['email']}:{credentials['password']}")}", "success")
 
         # Retrieve and store authentication tokens
         session_token = get_token(sb)
         if session_token:
-            log_message(f"Authentication token retrieved: {color(f'{session_token[:10]}...')}", "success")
+            log_message(f"Authentication token retrieved: {color(f'{session_token[:TOKEN_PREVIEW_LENGTH]}...')}", "success")
         
         # Update local Cursor authentication
         log_message(f"Updating local {color('Cursor', Fore.YELLOW)} authentication...")
@@ -346,4 +384,3 @@ def register():
 
 if __name__ == "__main__":
     register()
-
